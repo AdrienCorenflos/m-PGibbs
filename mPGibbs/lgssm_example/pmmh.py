@@ -133,9 +133,7 @@ if __name__ == "__main__":
 
 
     trajectories = trajectories[burn:]
-    # plt.plot(trajectories.T, label="Trajectories", alpha=0.1)
-    # plt.title("PMMH Trajectories")
-    # plt.show()
+
     plt.plot(trajectories.mean(axis=0), label="Mean Trajectory", color='red')
     plt.fill_between(
         np.arange(T),
