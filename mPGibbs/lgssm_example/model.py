@@ -1,22 +1,25 @@
+import numba as nb
 import numpy as np
-from scipy.stats import invgamma, uniform, norm
+from scipy.stats import invgamma, uniform
+
+from mPGibbs.math import norm_logpdf
 
 
 def transition():
     def rvs(x, theta):
-        rho, sig_x, _ = theta
+        rho, var_x, _ = theta
         eps = np.random.randn(*x.shape)
-        return rho * x + sig_x * eps
+        return rho * x + var_x ** 0.5 * eps
 
     def logpdf(x_prev, x, theta):
-        rho, sig_x, _ = theta
-        return norm.logpdf(x, rho * x_prev, sig_x)
+        rho, var_x, _ = theta
+        return norm_logpdf(x, rho * x_prev, var_x ** 0.5)
 
     def gaussian(theta):
-        rho, sig_x, _ = theta
+        rho, var_x, _ = theta
         F = rho
         b = 0.
-        Q = sig_x ** 2
+        Q = var_x
         return F, b, Q
 
     return rvs, logpdf, gaussian
@@ -30,13 +33,13 @@ def theta_prior():
         rho = fro_uniform.rvs()
         var_x = fro_invgamma.rvs()
         var_y = fro_invgamma.rvs()
-        return np.array([rho, np.sqrt(var_x), np.sqrt(var_y)])
+        return np.array([rho, var_x, var_y])
 
     def logpdf(theta):
-        rho, sig_x, sig_y = theta
+        rho, var_x, var_y = theta
         logpdf_rho = fro_uniform.logpdf(rho)
-        logpdf_sig_x = fro_invgamma.logpdf(sig_x ** 2)
-        logpdf_sig_y = fro_invgamma.logpdf(sig_y ** 2)
+        logpdf_sig_x = fro_invgamma.logpdf(var_x)
+        logpdf_sig_y = fro_invgamma.logpdf(var_y)
         return logpdf_rho + logpdf_sig_x + logpdf_sig_y
 
     return rvs, logpdf
@@ -44,20 +47,19 @@ def theta_prior():
 
 def prior(N):
     def rvs(theta):
-        rho, sig_x, sig_y = theta
-        var_x = sig_x ** 2 / (1 - rho ** 2)
+        rho, var_x, var_y = theta
         return var_x ** 0.5 * np.random.randn(N)
 
     def logpdf(x, theta):
-        rho, sig_x, sig_y = theta
-        var_x = sig_x ** 2 / (1 - rho ** 2)
+        rho, var_x, var_y = theta
         z = x / var_x ** 0.5
         return -0.5 * z ** 2
 
     def gaussian(theta):
-        rho, sig_x, sig_y = theta
+        rho, var_x, var_y = theta
         m = 0.
-        P = sig_x ** 2 / (1 - rho ** 2)
+        # P = sig_x ** 2 / (1 - rho ** 2)
+        P = var_x
         return m, P
 
     return rvs, logpdf, gaussian
@@ -65,19 +67,19 @@ def prior(N):
 
 def observation():
     def rvs(x, theta):
-        rho, sig_x, sig_y = theta
-        eps = np.random.randn(*x.shape)
-        return x + sig_y * eps
+        rho, var_x, var_y = theta
+        eps = np.random.randn(*np.asarray(x).shape)
+        return x + var_y ** 0.5 * eps
 
     def logpdf(x, y, theta):
-        rho, sig_x, sig_y = theta
-        return norm.logpdf(y, x, sig_y)
+        rho, var_x, var_y = theta
+        return norm_logpdf(x, y, var_y ** 0.5)
 
     def gaussian(theta):
-        rho, sig_x, sig_y = theta
+        rho, var_x, var_y = theta
         H = 1.
         c = 0.
-        R = sig_y ** 2
+        R = var_y
         return H, c, R
 
     return rvs, logpdf, gaussian
