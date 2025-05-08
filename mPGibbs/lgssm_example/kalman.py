@@ -143,7 +143,7 @@ if __name__ == "__main__":
     import joblib
 
     Ts = [100]
-    K = 10_000
+    K = 100_000
     burn = K // 10
     delta = 0.15 ** 2
 

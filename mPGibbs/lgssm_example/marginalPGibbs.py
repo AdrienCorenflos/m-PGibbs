@@ -335,9 +335,9 @@ if __name__ == "__main__":
     import joblib
 
     T = 100
-    Ns = [16, 32, 64, 128, 256]
+    Ns = [16, 32, 64, 128, 256, 512]
     style = "mixture"
-    K = 10_000
+    K = 100_000
     burn = K // 10
     delta = 0.15 ** 2
 
