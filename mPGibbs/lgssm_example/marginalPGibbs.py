@@ -11,6 +11,7 @@ from scipy.special import logsumexp as scipy_logsumexp
 import mPGibbs.lgssm_example.model as model
 from mPGibbs.common.resampling import multinomial
 from mPGibbs.lgssm_example import proposal
+from mPGibbs.lgssm_example.kalman import kf
 from mPGibbs.lgssm_example.pmmh import pf
 
 
@@ -147,7 +148,7 @@ class MPGibbsState(NamedTuple):
     trajectory: np.ndarray
 
 
-def cpf(thetas, trajectory, T, N, M, ys, backward=True, style="proposal"):
+def cpf(thetas, trajectory, T, N, M, ys, backward=True, style="mixture"):
     """
     Particle filter for the linear Gaussian state space model.
     """
@@ -233,18 +234,12 @@ def cpf(thetas, trajectory, T, N, M, ys, backward=True, style="proposal"):
 
     if not backward:
         ws_theta_k = theta_ws[T - 1, :, k]
-        ws_theta_except_0 = ws_theta_k[1:] / (1 - ws_theta_k[0])
-        if M == 2:
-            k_theta = 1
-        else:
-            k_theta = np.random.choice(M - 1, p=ws_theta_except_0) + 1
-        theta_acc = np.random.rand() < ws_theta_k[k_theta] / ws_theta_k[0]
-        if not theta_acc:
-            k_theta = 0
+        k_theta = protected_choice(ws_theta_k)
+        ancestors = ancestors[::-1]
         for t in range(1, T):
             k = ancestors[t - 1, k]
             out[t] = xs[t, k]
-        return out[::-1], thetas[k_theta], theta_acc
+        return out[::-1], thetas[k_theta], k_theta != 0
     else:
         theta_ws = theta_ws[::-1]
         log_thetas = np.zeros((M,))
@@ -260,15 +255,8 @@ def cpf(thetas, trajectory, T, N, M, ys, backward=True, style="proposal"):
             log_thetas += obs_logpdf(out[t-1], ys[t-1], thetas.T) + state_logpdf(out[t], out[t-1], thetas.T)
         log_thetas += obs_logpdf(out[T-1], ys[T-1], thetas.T) + prior_logpdf(out[T-1], thetas.T)
         ws_theta_k = np.exp(log_thetas - logsumexp(log_thetas))
-        ws_theta_except_0 = ws_theta_k[1:] / (1 - ws_theta_k[0])
-        if M == 2:
-            k_theta = 1
-        else:
-            k_theta = np.random.choice(M - 1, p=ws_theta_except_0) + 1
-        theta_acc = np.random.rand() < ws_theta_k[k_theta] / ws_theta_k[0]
-        if not theta_acc:
-            k_theta = 0
-        return out[::-1], thetas[k_theta], theta_acc
+        k_theta = protected_choice(ws_theta_k)
+        return out[::-1], thetas[k_theta], k_theta != 0
 
 
 def mPGibbs(state, T, N, M, ys, delta, backward=True, style="current"):
@@ -331,19 +319,85 @@ def do_one(K, T, N, burn, delta, style):
     return np.mean(accepted)
 
 
+# if __name__ == "__main__":
+#     import joblib
+#
+#     T = 100
+#     Ns = [16, 32, 64, 128, 256, 512]
+#     style = "mixture"
+#     K = 100_000
+#     burn = K // 10
+#     delta = 0.15 ** 2
+#
+#     results = joblib.Parallel(n_jobs=-1)(
+#         joblib.delayed(do_one)(K, T, N, burn, delta, style) for N in Ns
+#     )
+#
+#     np.savetxt(f"pgibbs_results_{style}.txt", results)
+
 if __name__ == "__main__":
-    import joblib
-
+    # Test the Kalman function
+    np.random.seed(0)
     T = 100
-    Ns = [16, 32, 64, 128, 256, 512]
-    style = "mixture"
-    K = 100_000
-    burn = K // 10
+    K = 2_000
     delta = 0.15 ** 2
+    burn = K // 10
+    backward = True
 
-    results = joblib.Parallel(n_jobs=-1)(
-        joblib.delayed(do_one)(K, T, N, burn, delta, style) for N in Ns
+    theta_rvs, _ = model.theta_prior()
+    ys = np.loadtxt('./simulated_linGauss_T100_varX1_varY.04_rho.9.txt')
+
+    trajectories = np.zeros((K, T))
+    parameters = pd.DataFrame(np.zeros((K, 3)), columns=["rho", r"$\sigma_x^2$", r"$\sigma_y^2$"])
+
+    theta_init = theta_rvs()
+    traj, ell, ms, Ps = kf(theta_init, T, ys)
+    trajectories[0] = traj
+    parameters.iloc[0] = theta_init
+
+    state = MPGibbsState(theta_init, traj)
+    accepted = np.zeros((K, T), dtype=bool)
+    accepted[0] = True
+
+    pbar = tqdm.trange(1, K, desc="PGibbs: pct accepted")
+    for k in pbar:
+        state, accepted[k] = mPGibbs(state, T, 16, 2, ys, delta, backward=backward, style="mixture")
+        trajectories[k] = state.trajectory
+        parameters.iloc[k] = state.theta
+        pbar.set_description(f"PGibbs: {np.mean(accepted[:k + 1]):.2%} accepted")
+
+    trajectories = trajectories[burn:]
+    parameters = parameters.iloc[burn:]
+
+    g = sns.pairplot(parameters, kind="kde")
+
+    true_theta = np.array([0.9, 1, 0.2 ** 2])
+    for i in range(3):
+        for j in range(3):
+            if i != j:
+                g.axes[i, j].scatter(
+                    true_theta[j], true_theta[i],
+                    color="k", label="True Value", zorder=10
+                )
+            else:
+                g.axes[i, j].vlines(
+                    true_theta[i], 0, 1, transform=g.axes[i, j].get_xaxis_transform(), color="k",
+                )
+
+    plt.show()
+
+
+    plt.plot(trajectories.mean(axis=0), label="Mean Trajectory", color='red')
+    plt.fill_between(
+        np.arange(T),
+        trajectories.mean(axis=0) - 2 * trajectories.std(axis=0),
+        trajectories.mean(axis=0) + 2 * trajectories.std(axis=0),
+        alpha=0.5,
+        label="Min/Max Trajectory",
+        color='blue'
     )
-
-    np.savetxt(f"pgibbs_results_{style}.txt", results)
-
+    plt.plot(np.arange(T), ys[:T], label="Observations", color='k', marker='o', markersize=2, linestyle='None')
+    # plt.ylim(-0.75, 1.25)
+    plt.suptitle("Kalman")
+    plt.show()
+#

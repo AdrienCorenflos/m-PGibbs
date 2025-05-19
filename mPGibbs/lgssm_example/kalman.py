@@ -87,7 +87,7 @@ def _kf(T, ys, m, P, H, c, R, F, b, Q):
     return out[::-1], ell, ms[::-1], Ps[::-1]
 
 
-def mh(state, T, ys, delta):
+def mh(state, T, ys, delta, barker=False):
     ell, theta, trajectory = state
     _, theta_logpdf = model.theta_prior()
 
@@ -98,15 +98,20 @@ def mh(state, T, ys, delta):
     trajectory_new, ell_new, *_ = kf(theta_new, T, ys)
 
     # Compute the acceptance ratio
-    log_alpha = ell_new + theta_logpdf(theta_new) - ell - theta_logpdf(theta)
-    alpha = np.exp(log_alpha)
+
+    if not barker:
+        log_alpha = ell_new + theta_logpdf(theta_new) - ell - theta_logpdf(theta)
+        alpha = np.exp(log_alpha)
+
+    else:
+        alpha = np.exp(ell_new + theta_logpdf(theta_new)) / (np.exp(ell_new + theta_logpdf(theta_new)) + np.exp(ell + theta_logpdf(theta)))
     if np.random.rand() < alpha:
         return KalmanState(ell_new, theta_new, trajectory_new), True
     else:
         return KalmanState(ell, theta, trajectory), False
 
 
-def do_one(K, T, burn, delta):
+def do_one(K, T, burn, delta, barker):
     theta_rvs, *_ = model.theta_prior()
     ys = np.loadtxt('./simulated_linGauss_T100_varX1_varY.04_rho.9.txt')
 
@@ -126,7 +131,7 @@ def do_one(K, T, burn, delta):
 
     pbar = tqdm.trange(1, K, desc="Kalman: pct accepted")
     for k in pbar:
-        state, accepted[k] = mh(state, T, ys, delta)
+        state, accepted[k] = mh(state, T, ys, delta, barker)
         trajectories[k] = state.trajectory
         parameters.iloc[k] = state.theta
         pbar.set_description(f"Kalman: {np.mean(accepted[:k + 1]):.2%} accepted")
@@ -141,83 +146,83 @@ def do_one(K, T, burn, delta):
 
 if __name__ == "__main__":
     import joblib
-
     Ts = [100]
     K = 100_000
     burn = K // 10
     delta = 0.15 ** 2
 
     results = joblib.Parallel(n_jobs=-1)(
-        joblib.delayed(do_one)(K, T, burn, delta) for T in Ts
+        joblib.delayed(do_one)(K, T, burn, delta, barker) for T in Ts
+        for barker in [True, False]
     )
 
-    np.savetxt("kalman_results.txt", results)
+    np.savetxt(f"kalman_results.txt", results)
 
 
+#
+
+if __name__ == "__main__":
+    # Test the Kalman function
+    T = 100
+    K = 20_000
+    delta = 0.15 ** 2
+    burn = K // 10
+    barker = True
+
+    theta_rvs, _ = model.theta_prior()
+    ys = np.loadtxt('./simulated_linGauss_T100_varX1_varY.04_rho.9.txt')
+
+    trajectories = np.zeros((K, T))
+    parameters = pd.DataFrame(np.zeros((K, 3)), columns=["rho", r"$\sigma_x^2$", r"$\sigma_y^2$"])
+
+    theta_init = theta_rvs()
+    traj, ell, ms, Ps = kf(theta_init, T, ys)
+    trajectories[0] = traj
+    parameters.iloc[0] = theta_init
+
+    state = KalmanState(ell, theta_init, traj)
+    accepted = np.zeros((K, T), dtype=bool)
+    accepted[0] = True
+
+    pbar = tqdm.trange(1, K, desc="MH: pct accepted")
+    for k in pbar:
+        state, accepted[k] = mh(state, T, ys, delta, barker)
+        trajectories[k] = state.trajectory
+        parameters.iloc[k] = state.theta
+        pbar.set_description(f"MH: {np.mean(accepted[:k + 1]):.2%} accepted")
+
+    trajectories = trajectories[burn:]
+    parameters = parameters.iloc[burn:]
+
+    g = sns.pairplot(parameters, kind="kde")
+
+    true_theta = np.array([0.9, 1, 0.2 ** 2])
+    for i in range(3):
+        for j in range(3):
+            if i != j:
+                g.axes[i, j].scatter(
+                    true_theta[j], true_theta[i],
+                    color="k", label="True Value", zorder=10
+                )
+            else:
+                g.axes[i, j].vlines(
+                    true_theta[i], 0, 1, transform=g.axes[i, j].get_xaxis_transform(), color="k",
+                )
+
+    plt.show()
 
 
-# if __name__ == "__main__":
-#     # Test the Kalman function
-#     np.random.seed(0)
-#     T = 100
-#     K = 1_000
-#     delta = 0.15 ** 2
-#     burn = K // 10
-#
-#     theta_rvs, _ = model.theta_prior()
-#     ys = np.loadtxt('./simulated_linGauss_T100_varX1_varY.04_rho.9.txt')
-#
-#     trajectories = np.zeros((K, T))
-#     parameters = pd.DataFrame(np.zeros((K, 3)), columns=["rho", r"$\sigma_x^2$", r"$\sigma_y^2$"])
-#
-#     theta_init = theta_rvs()
-#     traj, ell, ms, Ps = kf(theta_init, T, ys)
-#     trajectories[0] = traj
-#     parameters.iloc[0] = theta_init
-#
-#     state = KalmanState(ell, theta_init, traj)
-#     accepted = np.zeros((K, T), dtype=bool)
-#     accepted[0] = True
-#
-#     pbar = tqdm.trange(1, K, desc="MH: pct accepted")
-#     for k in pbar:
-#         state, accepted[k] = mh(state, T, ys, delta)
-#         trajectories[k] = state.trajectory
-#         parameters.iloc[k] = state.theta
-#         pbar.set_description(f"MH: {np.mean(accepted[:k + 1]):.2%} accepted")
-#
-#     trajectories = trajectories[burn:]
-#     parameters = parameters.iloc[burn:]
-#
-#     g = sns.pairplot(parameters, kind="kde")
-#
-#     true_theta = np.array([0.9, 1, 0.2 ** 2])
-#     for i in range(3):
-#         for j in range(3):
-#             if i != j:
-#                 g.axes[i, j].scatter(
-#                     true_theta[j], true_theta[i],
-#                     color="k", label="True Value", zorder=10
-#                 )
-#             else:
-#                 g.axes[i, j].vlines(
-#                     true_theta[i], 0, 1, transform=g.axes[i, j].get_xaxis_transform(), color="k",
-#                 )
-#
-#     plt.show()
-#
-#
-#     plt.plot(trajectories.mean(axis=0), label="Mean Trajectory", color='red')
-#     plt.fill_between(
-#         np.arange(T),
-#         trajectories.mean(axis=0) - 2 * trajectories.std(axis=0),
-#         trajectories.mean(axis=0) + 2 * trajectories.std(axis=0),
-#         alpha=0.5,
-#         label="Min/Max Trajectory",
-#         color='blue'
-#     )
-#     plt.plot(np.arange(T), ys[:T], label="Observations", color='k', marker='o', markersize=2, linestyle='None')
-#     # plt.ylim(-0.75, 1.25)
-#     plt.suptitle("Kalman")
-#     plt.show()
-#
+    plt.plot(trajectories.mean(axis=0), label="Mean Trajectory", color='red')
+    plt.fill_between(
+        np.arange(T),
+        trajectories.mean(axis=0) - 2 * trajectories.std(axis=0),
+        trajectories.mean(axis=0) + 2 * trajectories.std(axis=0),
+        alpha=0.5,
+        label="Min/Max Trajectory",
+        color='blue'
+    )
+    plt.plot(np.arange(T), ys[:T], label="Observations", color='k', marker='o', markersize=2, linestyle='None')
+    # plt.ylim(-0.75, 1.25)
+    plt.suptitle("Kalman")
+    plt.show()
+
